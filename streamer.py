@@ -6,7 +6,8 @@ import struct
 from concurrent.futures.thread import ThreadPoolExecutor
 import time
 import hashlib
-import threading
+#from threading import Lock
+#from threading import Timer
 
 HEADER_SIZE = 24
 PACKET_SIZE = 1472 - HEADER_SIZE     # data able to be sent, accounting for header 1472
@@ -60,15 +61,29 @@ class Streamer:
         self.seq_num = 0
         self.buf = {}
         self.acked = False
+        #self.fin_acked = False
 
         self.closed = False
-        executor = ThreadPoolExecutor(max_workers=1)
+        executor = ThreadPoolExecutor(max_workers=1) # max_workers=2
         executor.submit(self.listener)
 
+        # executor.submit(self.window_resender)
         #self.timer = time.time()
-        #self.lock = threading.Lock()
+        #self.lock = Lock()
         #self.flight = []
         #self.flight_seq = []
+
+    '''
+    def window_resender(self):
+        while not self.closed:
+            #print("outside if in window resender")
+            with self.lock:
+                print("window resender")
+                if (time.time() - self.timer) > ACK_TIMEOUT:
+                    for p in self.flight:
+                        self.socket.sendto(p, (self.dst_ip, self.dst_port))
+                    self.timer = time.time()
+    '''
 
     def send(self, data_bytes: bytes) -> None:
         """Note that data_bytes can be larger than one packet."""
@@ -123,14 +138,14 @@ class Streamer:
         """Cleans up. It should block (wait) until the Streamer is done with all
            the necessary ACKs and retransmissions"""
         # your code goes here, especially after you add ACKs and retransmissions.
-        # self.acked = False
+        self.acked = False
 
         #while len(self.flight_seq) != 0:
         #    continue
 
         fin_hash = to_hash(struct.pack('i', self.recv_base), struct.pack('i', 299), b'')
         fin_packet = struct.pack('ii' + '16s', self.recv_base, 299, fin_hash)
-        while not self.acked:
+        while not self.acked: #self.fin_acked
             self.socket.sendto(fin_packet, (self.dst_ip, self.dst_port))
             time.sleep(ACK_TIMEOUT)
 
@@ -142,7 +157,6 @@ class Streamer:
     def listener(self):
         count = 1
         while not self.closed:  # a later hint will explain self.closed
-            #print(f"listener loop #{count}")
             count += 1
 
             try:
@@ -155,7 +169,6 @@ class Streamer:
                 hash_val_data = to_hash(struct.pack('i', seq_number), struct.pack('i', ack_number), data_no_header)
 
                 if hash_val_header != 0 and hash_val_data != hash_val_header and ack_number == 0:
-                    #print("HASH DOESN'T MATCH")
                     continue
                 elif ack_number == 0:         # data
                     if seq_number not in self.buf:
@@ -166,24 +179,32 @@ class Streamer:
                     self.socket.sendto(ack_send, (self.dst_ip, self.dst_port))
                 elif ack_number == 200:     # ACK
                     if get_hash(data) == to_hash(struct.pack('i', seq_number), struct.pack('i', 200), b''):
+                        #if self.fin_acked:
+                        #    continue
                         self.acked = True
                         #with self.lock:
-                        #    if seq_number == min(self.flight_seq):
-                        #        self.timer = time.time()
-                        #        self.flight_seq.remove(seq_number)
-                        #        self.flight.pop(0)
-                        #    elif seq_number > min(self.flight_seq):
-                        #        resend_num = seq_number - min(self.flight_seq)
-                        #        for i in range(resend_num):
-                        #            self.flight_seq.remove(min(self.flight_seq))
-                        #            self.flight.pop(0)
-                        #        self.timer = time.time()
+                            #print(f"self.flight_seq: {self.flight_seq}")
+                            #print(f"min(self.flight_seq): {min(self.flight_seq)}")
+                            #print(f"self.seq_num-1: {self.seq_num-1}")
+                            #if self.seq_num - 1 == min(self.flight_seq):
+                                #print("if")
+                                #self.timer = time.time()
+                                #self.flight_seq.remove(self.seq_num - 1)
+                                #self.flight.pop(0)
+                            #elif self.seq_num - 1 > min(self.flight_seq):
+                                #print('elif')
+                                #resend_num = self.seq_num - min(self.flight_seq)
+                                #for i in range(resend_num):
+                                    #self.flight_seq.remove(min(self.flight_seq))
+                                    #self.flight.pop(0)
+                                #self.timer = time.time()
 
                 elif ack_number == 299:     # FIN
                     if get_hash(data) == to_hash(struct.pack('i', seq_number), struct.pack('i', 299), b''):
                         fin_ack_hash = to_hash(struct.pack('i', self.recv_base), struct.pack('i', 200), b'')
                         ack_send = struct.pack('ii' + '16s', self.recv_base, 200, fin_ack_hash)
                         self.socket.sendto(ack_send, (self.dst_ip, self.dst_port))
+                        #self.fin_acked = True
 
             except Exception as e:
                 if not self.closed:
